@@ -1,0 +1,303 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Obsidian 느낌 그래프 (심플·저자극, 초기줌=라벨 직전)</title>
+  <meta name="description" content="네이버 블로그 내부 링크를 Obsidian 그래프처럼 간결하게 시각화" />
+  <style>
+    html, body { height: 100%; margin: 0; background:#0f1115; color:#e5e7eb; }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, 'Noto Sans KR', Helvetica, Arial, sans-serif; }
+    #cy { width: 100vw; height: 100vh; display:block; }
+
+    /* 좌상단: 절대 줌 HUD (원치 않으면 아래 .hud 통째로 삭제) */
+    .hud {
+      position: fixed; left: 10px; top: 10px; z-index: 10000;
+      background: rgba(2,6,12,.7);
+      border: 1px solid #1f2937; border-radius: 10px; padding: 8px 10px;
+      color:#e5e7eb; font-size: 12px; line-height: 1.4; user-select: none;
+      backdrop-filter: blur(4px);
+    }
+    .hud .val { font-weight: 700; }
+
+    /* 로딩/에러 오버레이 */
+    .overlay {
+      position: fixed; inset: 0; display:flex; align-items:center; justify-content:center;
+      background: rgba(15,17,21,.85); color:#cbd5e1; font-size:14px; text-align:center; z-index:9999;
+      padding:16px; line-height:1.6;
+    }
+    .overlay.hidden { display:none; }
+    .overlay strong { color:#fff; }
+  </style>
+
+  <!-- Cytoscape core -->
+  <script src="https://cdn.jsdelivr.net/npm/cytoscape@3/dist/cytoscape.min.js"></script>
+  <!-- Force-directed layout (부드러운 장력 애니메이션) -->
+  <script src="https://cdn.jsdelivr.net/npm/cytoscape-fcose@2/dist/cytoscape-fcose.min.js"></script>
+</head>
+<body>
+  <div id="cy"></div>
+
+  <!-- 절대 줌 HUD (원치 않으면 이 div 삭제) -->
+  <div id="hud" class="hud" style="display:none">
+    Zoom <span class="val">x<span id="hudScale">1.00</span></span>
+  </div>
+
+  <!-- 로딩/에러 -->
+  <div id="overlay" class="overlay">
+    <div>
+      <strong>그래프 불러오는 중…</strong><br/>
+      (로컬 파일로 직접 열면 <code>graph.json</code>을 못 읽을 수 있습니다.<br/>
+      간단 서버로 띄우거나 GitHub Pages/Netlify에서 확인하세요.)
+    </div>
+  </div>
+
+  <script>
+    /* =========================
+     * 최소 설정 (심플·저자극)
+     * ========================= */
+    const GRAPH_URL      = 'graph.json';
+    const NODE_SIZE_MIN  = 14;
+    const NODE_SIZE_MAX  = 60;
+
+    // 라벨 정책
+    const ENABLE_HOVER_LABEL = true;
+    const ENABLE_ZOOM_LABEL  = true;
+    const LABEL_ZOOM         = 1.25;     // ← 라벨이 켜지는 임계값
+    const LABEL_EPS          = 0.02;     // ← 딱 직전에서 멈추도록 여유폭
+
+    const COLORS = {
+      node:   '#c9ced3',   // 기본 노드
+      hover:  '#8b5cf6',   // 호버 시 채움
+      edge:   '#8e98a4',   // 기본 엣지
+      edgeHi: '#8b5cf6',   // 강조 엣지
+      text:   '#e5e7eb',
+      textBg: '#0f1115'
+    };
+
+    // fcose 등록 (실패 시 cose로 폴백)
+    try { if (window.cytoscapeFcose) cytoscape.use(window.cytoscapeFcose); } catch(_) {}
+
+    const overlayEl = document.getElementById('overlay');
+    const showOverlay = (html) => { overlayEl.innerHTML = html; overlayEl.classList.remove('hidden'); };
+    const hideOverlay = () => overlayEl.classList.add('hidden');
+
+    async function loadGraph() {
+      const res = await fetch(GRAPH_URL, { cache: 'no-store' });
+      if (!res.ok) throw new Error(`graph.json 로드 실패 (HTTP ${res.status})`);
+      return await res.json();
+    }
+
+    // 유향 → 무방향 단일선(방향 메타 보존)
+    function makeUndirectedEdgesWithDirMeta(directedEdges) {
+      const pairMap = new Map(); // key = "a|b" (a<b)
+      for (const e of directedEdges || []) {
+        const s = e?.data?.source, t = e?.data?.target;
+        if (!s || !t || s === t) continue;
+        const a = s < t ? s : t, b = s < t ? t : s;
+        const key = `${a}|${b}`;
+        let rec = pairMap.get(key);
+        if (!rec) { rec = { a, b, hasAB:false, hasBA:false, abCount:0, baCount:0 }; pairMap.set(key, rec); }
+        if (s === a && t === b) { rec.hasAB = true; rec.abCount++; } else { rec.hasBA = true; rec.baCount++; }
+      }
+      const merged = [];
+      for (const [key, r] of pairMap.entries()) {
+        merged.push({ data: {
+          id:`u:${key}`, source:r.a, target:r.b, undirected:true,
+          hasAB:r.hasAB, hasBA:r.hasBA, abCount:r.abCount, baCount:r.baCount
+        }});
+      }
+      return merged;
+    }
+
+    // 차수 기반 노드 크기 (루트 스케일: 허브는 살짝 더 크게)
+    function applyNodeSizes(cy) {
+      const degs = cy.nodes().map(n => n.degree());
+      const min = Math.min(...degs), max = Math.max(...degs);
+      const scale = d => max===min ? (NODE_SIZE_MIN+NODE_SIZE_MAX)/2
+                                   : NODE_SIZE_MIN + (Math.sqrt((d-min)/(max-min)))*(NODE_SIZE_MAX-NODE_SIZE_MIN);
+      cy.nodes().forEach(n => n.data('size', scale(n.degree())));
+    }
+
+    // 라벨 정책(호버/줌)
+    function setupLabelBehavior(cy) {
+      const updateZoomLabels = () => {
+        if (!ENABLE_ZOOM_LABEL) return;
+        const show = cy.zoom() >= LABEL_ZOOM;
+        if (show) cy.nodes().addClass('label-zoom'); else cy.nodes().removeClass('label-zoom');
+      };
+      updateZoomLabels(); cy.on('zoom', updateZoomLabels);
+
+      if (ENABLE_HOVER_LABEL) {
+        cy.on('mouseover', 'node', e => e.target.addClass('label-hover'));
+        cy.on('mouseout',  'node', e => e.target.removeClass('label-hover'));
+      }
+    }
+
+    // 절대 줌 HUD
+    function setupAbsoluteZoomHUD(cy) {
+      const hud = document.getElementById('hud');
+      const elScale = document.getElementById('hudScale');
+      hud.style.display = 'block';
+      const updateHUD = () => { elScale.textContent = cy.zoom().toFixed(2); };
+      updateHUD(); cy.on('zoom', updateHUD);
+    }
+
+    // 초기 레이아웃(짧고 차분하게) — fit은 여기서 하지 않고, layoutstop 후에 별도로 fit+클램프
+    function runInitialLayout(cy) {
+      const useFcose = !!window.cytoscapeFcose;
+      const conf = Object.assign(
+        {
+          name: useFcose ? 'fcose' : 'cose',
+          animate: true,
+          animationDuration: 500,     // 짧게
+          animationEasing: 'ease-out-cubic',
+          randomize: true,
+          fit: false                  // ★ 여기서 fit 하지 않음
+        },
+        useFcose ? {
+          quality: 'default',
+          idealEdgeLength: 120,
+          nodeRepulsion: 12000,
+          gravity: 0.8,
+          numIter: 1500
+        } : {
+          idealEdgeLength: 120,
+          nodeRepulsion: 12000,
+          gravity: true
+        }
+      );
+      const layout = cy.layout(conf);
+      // 레이아웃 종료 후, 화면에 맞추고 라벨 직전 줌으로 세팅
+      cy.one('layoutstop', () => {
+        requestAnimationFrame(() => fitAndClampInitialZoom(cy));
+      });
+      layout.run();
+    }
+
+    // ★ 핵심: 초기 화면을 "라벨이 막 안 보이는" 줌으로 클램프
+    function fitAndClampInitialZoom(cy) {
+      const PADDING = 60;
+      cy.fit(cy.elements(), PADDING);       // 우선 화면에 맞춤
+      const fitZoom = cy.zoom();            // fit이 만든 줌 값
+      const target  = Math.min(fitZoom, LABEL_ZOOM - LABEL_EPS); // 라벨 직전으로 제한
+      const clamped = Math.max(cy.minZoom(), Math.min(cy.maxZoom(), target));
+      cy.zoom(clamped);
+      cy.center();                          // 중앙 정렬 유지
+    }
+
+    (async () => {
+      try {
+        const raw = await loadGraph();
+        hideOverlay();
+
+        const nodes = raw?.elements?.nodes ?? [];
+        const undirectedEdges = makeUndirectedEdgesWithDirMeta(raw?.elements?.edges ?? []);
+
+        const cy = cytoscape({
+          container: document.getElementById('cy'),
+          elements: { nodes, edges: undirectedEdges },
+          style: [
+            /* 기본 노드 */
+            { selector: 'node', style: {
+              'background-color': '#c9ced3',
+              'background-opacity': 1,
+              'width': 'data(size)', 'height':'data(size)',
+              'label':'', 'font-size':11, 'color':COLORS.text,
+              'text-wrap':'wrap', 'text-max-width':240,
+              'text-halign':'center','text-valign':'bottom','text-margin-y':6,
+              'z-index': 10,
+              'transition-property': 'background-color, border-width, border-color, text-opacity, background-opacity',
+              'transition-duration': '120ms'
+            }},
+            /* 라벨 표시: 호버/줌 */
+            { selector: 'node.label-hover, node.label-zoom', style: {
+              'label':'data(label)',
+              'text-background-color': COLORS.textBg,
+              'text-background-opacity': 0.85,
+              'text-background-padding': '2px',
+              'text-background-shape': 'roundrectangle'
+            }},
+            /* 이웃 노드 */
+            { selector: 'node.neighbor', style: {
+              'background-color': '#e5e7eb', 'background-opacity': 1
+            }},
+            /* 호버 노드: 채움 자체 보라 */
+            { selector: 'node.hover', style: {
+              'background-color': COLORS.hover,
+              'border-width': 1.5, 'border-color': COLORS.edgeHi,
+              'background-opacity': 1
+            }},
+            /* dim 노드(호버 중 이웃 아님): 완전 투명 → 엣지 끊김 방지 */
+            { selector: 'node.dim', style: {
+              'background-opacity': 0, 'border-width': 0, 'text-opacity': 0.10
+            }},
+
+            /* 기본 엣지(얇고 균일) */
+            { selector: 'edge', style: {
+              'width': 1.2, 'opacity': 0.28,
+              'line-color': COLORS.edge,
+              'curve-style': 'straight',
+              'line-cap': 'round',
+              'target-arrow-shape': 'none',
+              'z-index': 1,
+              'transition-property': 'opacity, line-color, width',
+              'transition-duration': '120ms'
+            }},
+            /* 강조 엣지: 보라, 두껍고 위 레이어 */
+            { selector: 'edge.edge-highlight', style: {
+              'line-color': COLORS.edgeHi, 'opacity': 1, 'width': 2.4, 'z-index': 999
+            }},
+            /* 흐린 엣지 */
+            { selector: 'edge.edge-fade', style: { 'opacity': 0.08 }}
+          ]
+        });
+
+        applyNodeSizes(cy);
+        setupLabelBehavior(cy);
+
+        // HUD (원치 않으면 아래 두 줄과 .hud 요소 삭제)
+        (function setupHUD(){ const hud=document.getElementById('hud'); const v=document.getElementById('hudScale'); hud.style.display='block'; const up=()=>v.textContent=cy.zoom().toFixed(2); up(); cy.on('zoom',up); })();
+
+        // 초기 1회만 레이아웃 실행 → fit → 라벨 직전 줌으로 세팅
+        runInitialLayout(cy);
+
+        /* === 인터랙션(간결) === */
+        cy.on('mouseover', 'node', e => {
+          const n = e.target;
+          const neighNodes = n.neighborhood('node');
+          const neighEdges = n.connectedEdges();
+
+          cy.nodes().addClass('dim').removeClass('neighbor hover');
+          cy.edges().addClass('edge-fade').removeClass('edge-highlight');
+
+          n.removeClass('dim').addClass('hover');
+          neighNodes.removeClass('dim').addClass('neighbor');
+          neighEdges.removeClass('edge-fade').addClass('edge-highlight');
+        });
+        cy.on('mouseout', 'node', () => {
+          cy.nodes().removeClass('dim neighbor hover label-hover');
+          cy.edges().removeClass('edge-fade edge-highlight');
+        });
+
+        // 클릭 → 글 열기
+        cy.on('tap', 'node', e => {
+          const url = e.target.data('url');
+          if (url) window.open(url, '_blank', 'noopener');
+        });
+
+      } catch (err) {
+        showOverlay(
+          `<div>
+            <strong>그래프 로드 실패</strong><br/>
+            ${String(err).replace(/[<>]/g, '')}<br/><br/>
+            · <code>${GRAPH_URL}</code> 파일이 같은 폴더에 있는지 확인하세요.<br/>
+            · 로컬은 <code>file://</code> 대신 <code>http://localhost:5500</code> 같은 간단 서버로 열어보세요.
+          </div>`
+        );
+        console.error(err);
+      }
+    })();
+  </script>
+</body>
+</html>
