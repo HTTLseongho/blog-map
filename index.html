@@ -259,6 +259,7 @@
         // HUD (원치 않으면 아래 두 줄과 .hud 요소 삭제)
         (function setupHUD(){ const hud=document.getElementById('hud'); const v=document.getElementById('hudScale'); hud.style.display='block'; const up=()=>v.textContent=cy.zoom().toFixed(2); up(); cy.on('zoom',up); })();
 
+
         // 초기 1회만 레이아웃 실행 → fit → 라벨 직전 줌으로 세팅
         runInitialLayout(cy);
 
