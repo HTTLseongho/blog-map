@@ -1,0 +1,62 @@
+name: Update blog graph
+
+on:
+  # 매일 새벽 03:00 KST(= 18:00 UTC) 자동 실행
+  schedule:
+    - cron: "0 18 * * *"
+  # 웹에서 수동 실행 버튼
+  workflow_dispatch:
+    inputs:
+      blogId:
+        description: "Naver BLOG_ID (미입력시 repo 변수 사용)"
+        required: false
+      maxPosts:
+        description: "MAX_POSTS (미입력시 repo 변수 사용)"
+        required: false
+
+permissions:
+  contents: write   # graph.json 커밋/푸시
+
+concurrency:
+  group: update-graph
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install deps
+        run: npm ci || npm i
+
+      - name: Resolve inputs / vars
+        id: cfg
+        run: |
+          BLOG_ID="${{ github.event.inputs.blogId || vars.BLOG_ID }}"
+          MAX_POSTS="${{ github.event.inputs.maxPosts || vars.MAX_POSTS }}"
+          echo "BLOG_ID=$BLOG_ID"   >> $GITHUB_OUTPUT
+          echo "MAX_POSTS=$MAX_POSTS" >> $GITHUB_OUTPUT
+
+      - name: Generate graph.json
+        run: node generate_graph.mjs
+        env:
+          BLOG_ID: ${{ steps.cfg.outputs.BLOG_ID }}
+          MAX_POSTS: ${{ steps.cfg.outputs.MAX_POSTS }}
+
+      - name: Commit & push if changed
+        run: |
+          git add graph.json
+          if git diff --cached --quiet; then
+            echo "No changes."
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "chore: update graph.json"
+          git push
