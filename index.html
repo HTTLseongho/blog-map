@@ -9,6 +9,7 @@
     html, body { height: 100%; margin: 0; background:#0f1115; color:#e5e7eb; }
     body { font-family: system-ui, -apple-system, Segoe UI, Roboto, 'Noto Sans KR', Helvetica, Arial, sans-serif; }
     #cy { width: 100vw; height: 100vh; display:block; }
+
     /* 좌상단 줌 HUD (원치 않으면 아래 .hud 요소/스크립트 제거) */
     .hud {
       position: fixed; left: 10px; top: 10px; z-index: 10000;
@@ -18,6 +19,7 @@
       backdrop-filter: blur(4px);
     }
     .hud .val { font-weight: 700; }
+
     /* 로딩/에러 오버레이 */
     .overlay {
       position: fixed; inset: 0; display:flex; align-items:center; justify-content:center;
@@ -157,17 +159,24 @@
     return { edgeLen, repulsion };
   }
 
+  // 전역 스케일(레이아웃용 + 드래그 스프링에 재사용)
+  let LAYOUT_SCALES = null;
+
+  // (이웃 크기에 따라) 엣지의 이상 길이
+  function idealEdgeLenFor(edge){
+    const base = (LAYOUT_SCALES?.edgeLen ?? 120);
+    const sa = edge.source().data('size') || NODE_SIZE_MIN;
+    const sb = edge.target().data('size') || NODE_SIZE_MIN;
+    return base + 0.25 * ((sa + sb) / 2);
+  }
+
   /* 초기 레이아웃 (엣지 거리감 균일화) */
   function runInitialLayout(cy) {
+    LAYOUT_SCALES = computeLayoutScales(cy);
     const useFcose = !!window.cytoscapeFcose;
-    const { edgeLen, repulsion } = computeLayoutScales(cy);
+    const { edgeLen, repulsion } = LAYOUT_SCALES;
 
-    // 큰 노드끼리 연결된 엣지는 약간 더 길게
-    const edgeLenFn = (e) => {
-      const sa = e.source().data('size') || NODE_SIZE_MIN;
-      const sb = e.target().data('size') || NODE_SIZE_MIN;
-      return edgeLen + 0.25 * ((sa + sb) / 2);
-    };
+    const edgeLenFn = (e) => idealEdgeLenFor(e);
 
     const conf = useFcose
             ? {
@@ -222,25 +231,42 @@
     cy.center();
   }
 
-  /* ======== 드래그 중 겹침 완화(가벼운 반발력) ======== */
-  function installDragRepulsion(cy) {
-    let ticking = false;
-    cy.on('drag', 'node', e => {
-      if (ticking) return;
-      ticking = true;
-      const moved = e.target;
-      requestAnimationFrame(() => {
-        resolveCollisionsAround(moved, cy);
-        ticking = false;
-      });
+  /* ======== 드래그 중 간격 유지: 스프링 + 완화 반발 ======== */
+
+  // (A) 연결된 엣지 길이를 이상 길이로 수렴시키는 '국소 스프링'
+  function applyEdgeSpringsFrom(moved){
+    const cy = moved.cy();
+    const edges = moved.connectedEdges();
+    const k = 0.15;     // 스프링 강성 (0.1~0.25 사이 추천)
+    const TOL = 1.0;    // 허용 오차(px)
+
+    edges.forEach(e => {
+      const other = e.source().id() === moved.id() ? e.target() : e.source();
+      const p1 = moved.position();
+      const p2 = other.position();
+
+      let dx = p2.x - p1.x, dy = p2.y - p1.y;
+      let d = Math.hypot(dx,dy) || 0.0001;
+
+      const L = idealEdgeLenFor(e);
+      const diff = d - L; // +: 너무 멀다 → 가까이,  -: 너무 가깝다 → 멀리
+
+      if (Math.abs(diff) > TOL){
+        const ux = dx/d, uy = dy/d;
+        const shift = -diff * k; // 멀면 음수(다가오게), 가깝면 양수(멀어지게)
+        // 드래그 중인 노드는 건드리지 않고, 이웃만 보정
+        other.position({ x: p2.x + ux*shift, y: p2.y + uy*shift });
+      }
     });
   }
 
-  function resolveCollisionsAround(moved, cy) {
+  // (B) 근접 노드끼리 겹치지 않게 가벼운 반발
+  function resolveCollisionsAround(moved) {
+    const cy = moved.cy();
     const mPos = moved.position();
-    const mR   = moved.width()/2;         // 원형 가정
-    const MARGIN = 8;                     // 노드 간 최소 간격
-    const RANGE  = 250;                   // 검사 반경(퍼포먼스용)
+    const mR   = moved.width()/2;
+    const MARGIN = 8;
+    const RANGE  = 250;
 
     cy.nodes().not(moved).forEach(n => {
       const p = n.position();
@@ -252,10 +278,43 @@
       const minDist = mR + r + MARGIN;
 
       if (dist < minDist) {
-        const push = (minDist - dist) * 0.6;      // 밀어내는 정도(부드럽게)
+        const push = (minDist - dist) * 0.6;
         const ux = dx / (dist || 1), uy = dy / (dist || 1);
         n.position({ x: p.x + ux*push, y: p.y + uy*push });
       }
+    });
+  }
+
+  // (C) 드래그 중/후 러너 설치
+  function installInteractiveForces(cy){
+    let ticking = false;
+
+    cy.on('drag', 'node', e => {
+      if (ticking) return;
+      ticking = true;
+      const moved = e.target;
+      requestAnimationFrame(() => {
+        applyEdgeSpringsFrom(moved);  // 엣지 길이 보정
+        resolveCollisionsAround(moved); // 겹침 완화
+        ticking = false;
+      });
+    });
+
+    // 드래그를 놓은 뒤, 짧게 추가 완화(시각적으로 더 정돈됨)
+    cy.on('dragfree', 'node', e => {
+      const moved = e.target;
+      let i = 0, frames = 10; // 10프레임 정도
+      const relax = () => {
+        applyEdgeSpringsFrom(moved);
+        resolveCollisionsAround(moved);
+        if (++i < frames) requestAnimationFrame(relax);
+      };
+      requestAnimationFrame(relax);
+    });
+
+    // 창 크기 변동 시 스케일 업데이트
+    window.addEventListener('resize', () => {
+      LAYOUT_SCALES = computeLayoutScales(cy);
     });
   }
 
@@ -293,25 +352,20 @@
               'text-wrap':'wrap', 'text-max-width':240,
               'text-halign':'center','text-valign':'bottom','text-margin-y':6,
               'z-index': 10,
-              /* 클릭/선택시 생기는 둥근 하이라이트(overlay)와 탭 배경 제거 */
-              'overlay-opacity': 0,
+              'overlay-opacity': 0,   /* 클릭/선택시 하이라이트 제거 */
               'active-bg-opacity': 0,
               'transition-property': 'background-color, border-width, border-color, text-opacity, background-opacity',
               'transition-duration': '120ms'
             }},
 
-          /* 노드가 선택(:selected) 상태여도 시각 변화가 없도록 */
-          { selector: 'node:selected', style: {
-              'overlay-opacity': 0,
-              'border-width': 0
-            }},
+          { selector: 'node:selected', style: { 'overlay-opacity': 0, 'border-width': 0 }},
 
           /* 라벨 표시(호버/줌) — 배경 박스 제거, 대신 얇은 텍스트 아웃라인만 */
           { selector: 'node.label-hover, node.label-zoom', style: {
               'label':'data(label)',
               'text-outline-width': 2,
-              'text-outline-color': '#0f1115',   // 배경 대신 테두리로 가독성 확보
-              'text-background-opacity': 0       // 혹시라도 기본 박스가 뜨지 않도록
+              'text-outline-color': '#0f1115',
+              'text-background-opacity': 0
             }},
 
           /* 이웃 노드 */
@@ -356,8 +410,10 @@
       applyNodeSizes(cy);
       setupLabelBehavior(cy);
       setupAbsoluteZoomHUD(cy);
+
+      // 초기 레이아웃 및 인터랙션 힘 적용
       runInitialLayout(cy);
-      installDragRepulsion(cy);   // ← 드래그 겹침 완화 기능
+      installInteractiveForces(cy);
 
       /* === 이웃 강조 === */
       cy.on('mouseover', 'node', e => {
