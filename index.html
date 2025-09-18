@@ -139,24 +139,73 @@
     up(); cy.on('zoom', up);
   }
 
-  /* 초기 레이아웃 */
+  /* ===== 공통 도우미: 간격 스케일 산출 ===== */
+  function clamp(x, min, max){ return Math.max(min, Math.min(max, x)); }
+
+  // 화면 크기·노드 수 기반으로 엣지 목표 길이/반발력 자동 계산
+  function computeLayoutScales(cy){
+    const N = Math.max(1, cy.nodes().length);
+    const area = Math.max(1, cy.width() * cy.height());
+    // 노드당 가용 면적의 제곱근 ≒ 평균 간격 기준
+    const s = Math.sqrt(area / N);
+
+    // 엣지 목표 길이(노드 많을수록 줄어듦)
+    const edgeLen = clamp(s * 0.55, 70, 160);
+    // 반발력은 목표 길이에 비례(겹침 방지)
+    const repulsion = Math.pow(edgeLen, 2) * 4;
+
+    return { edgeLen, repulsion };
+  }
+
+  /* 초기 레이아웃 (엣지 거리감 균일화) */
   function runInitialLayout(cy) {
     const useFcose = !!window.cytoscapeFcose;
-    const conf = Object.assign(
-            {
-              name: useFcose ? 'fcose' : 'cose',
+    const { edgeLen, repulsion } = computeLayoutScales(cy);
+
+    // 큰 노드끼리 연결된 엣지는 약간 더 길게
+    const edgeLenFn = (e) => {
+      const sa = e.source().data('size') || NODE_SIZE_MIN;
+      const sb = e.target().data('size') || NODE_SIZE_MIN;
+      return edgeLen + 0.25 * ((sa + sb) / 2);
+    };
+
+    const conf = useFcose
+            ? {
+              name: 'fcose',
               animate: true,
               animationDuration: 500,
               animationEasing: 'ease-out-cubic',
               randomize: true,
-              fit: false
-            },
-            useFcose ? {
-              quality: 'default', idealEdgeLength: 120, nodeRepulsion: 12000, gravity: 0.8, numIter: 1500
-            } : {
-              idealEdgeLength: 120, nodeRepulsion: 12000, gravity: true
+              fit: false,
+
+              // === 간격 컨트롤의 핵심 ===
+              idealEdgeLength: edgeLenFn,        // 엣지 목표 길이(함수)
+              nodeRepulsion:   () => repulsion,  // 반발력(함수)
+
+              quality: 'default',
+              gravity: 0.8,
+              numIter: 1500,
+              tile: true,
+              packComponents: true
             }
-    );
+            : {
+              name: 'cose',
+              animate: true,
+              animationDuration: 500,
+              animationEasing: 'ease-out-cubic',
+              randomize: true,
+              fit: false,
+
+              // === 간격 컨트롤의 핵심 ===
+              idealEdgeLength: edgeLen,          // 숫자만 허용
+              nodeRepulsion:   repulsion,        // 숫자만 허용
+
+              componentSpacing: edgeLen * 0.8,
+              gravity: 1,
+              numIter: 1000,
+              edgeElasticity: 100
+            };
+
     const layout = cy.layout(conf);
     cy.one('layoutstop', () => requestAnimationFrame(() => fitAndClampInitialZoom(cy)));
     layout.run();
@@ -337,11 +386,11 @@
     } catch (err) {
       showOverlay(
               `<div>
-            <strong>그래프 로드 실패</strong><br/>
-            ${String(err).replace(/[<>]/g, '')}<br/><br/>
-            · <code>${GRAPH_URL}</code> 파일이 같은 폴더에 있는지 확인하세요.<br/>
-            · 로컬은 <code>file://</code> 대신 <code>http://localhost:5500</code> 같은 간단 서버로 열어보세요.
-          </div>`
+          <strong>그래프 로드 실패</strong><br/>
+          ${String(err).replace(/[<>]/g, '')}<br/><br/>
+          · <code>${GRAPH_URL}</code> 파일이 같은 폴더에 있는지 확인하세요.<br/>
+          · 로컬은 <code>file://</code> 대신 <code>http://localhost:5500</code> 같은 간단 서버로 열어보세요.
+        </div>`
       );
       console.error(err);
     }
