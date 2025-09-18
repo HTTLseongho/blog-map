@@ -1,0 +1,13 @@
+{
+  "name": "naver-blog-map",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "build": "node generate_graph.mjs"
+  },
+  "dependencies": {
+    "cheerio": "^1.0.0-rc.12",
+    "fast-xml-parser": "^4.4.0",
+    "p-limit": "^5.0.0"
+  }
+}
