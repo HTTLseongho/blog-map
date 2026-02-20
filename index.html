@@ -4,84 +4,182 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>seongho_vs_ai</title>
-  <meta name="description" content="네이버 블로그 내부 링크를 Obsidian 그래프처럼 간결하게 시각화" />
+  <meta name="description" content="네이버 블로그 내부 링크를 Obsidian 그래프처럼 시각화" />
   <style>
-    html, body { height: 100%; margin: 0; background:#0f1115; color:#e5e7eb; }
-    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, 'Noto Sans KR', Helvetica, Arial, sans-serif; }
-    #cy { width: 100vw; height: 100vh; display:block; }
+    @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;700&display=swap');
 
-    /* 좌상단 줌 HUD (원치 않으면 아래 .hud 요소/스크립트 제거) */
-    .hud {
-      position: fixed; left: 10px; top: 10px; z-index: 10000;
-      background: rgba(2,6,12,.7);
-      border: 1px solid #1f2937; border-radius: 10px; padding: 8px 10px;
-      color:#e5e7eb; font-size: 12px; line-height: 1.4; user-select: none;
-      backdrop-filter: blur(4px);
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background: #1a1a2e;
+      font-family: 'Noto Sans KR', sans-serif;
+      overflow: hidden;
+      height: 100vh;
+      width: 100vw;
     }
-    .hud .val { font-weight: 700; }
 
-    /* 로딩/에러 오버레이 */
+    #graph-container {
+      width: 100%;
+      height: 100%;
+      position: relative;
+    }
+
+    svg {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
+    .link {
+      stroke: rgba(139, 92, 246, 0.25);
+      stroke-width: 1;
+      transition: stroke 0.3s, stroke-width 0.3s;
+    }
+
+    .link.highlighted {
+      stroke: rgba(139, 92, 246, 0.8);
+      stroke-width: 2;
+    }
+
+    .node-circle {
+      cursor: pointer;
+      transition: r 0.3s ease;
+    }
+
+    .node-label {
+      fill: #c4b5fd;
+      font-size: 10px;
+      font-weight: 400;
+      pointer-events: none;
+      text-anchor: middle;
+      opacity: 0.85;
+      transition: opacity 0.3s, font-size 0.3s;
+      text-shadow: 0 0 6px rgba(26, 26, 46, 0.9), 0 0 12px rgba(26, 26, 46, 0.7);
+    }
+
+    .node-label.hub {
+      font-size: 13px;
+      font-weight: 700;
+      fill: #e9d5ff;
+      opacity: 1;
+    }
+
+    .node-label.dimmed { opacity: 0.15; }
+    .node-circle.dimmed { opacity: 0.1; }
+    .link.dimmed { opacity: 0.05; }
+
+    .node-label.focused {
+      opacity: 1;
+      font-size: 13px;
+      fill: #fff;
+    }
+
+    /* Legend */
+    #legend {
+      position: absolute;
+      top: 20px;
+      left: 20px;
+      background: rgba(26, 26, 46, 0.85);
+      backdrop-filter: blur(12px);
+      border: 1px solid rgba(139, 92, 246, 0.2);
+      border-radius: 12px;
+      padding: 16px 20px;
+      color: #c4b5fd;
+      font-size: 12px;
+      z-index: 10;
+    }
+
+    #legend h3 {
+      font-size: 14px;
+      font-weight: 700;
+      color: #e9d5ff;
+      margin-bottom: 12px;
+      letter-spacing: 0.5px;
+    }
+
+    #stats {
+      position: absolute;
+      bottom: 20px;
+      left: 20px;
+      background: rgba(26, 26, 46, 0.85);
+      backdrop-filter: blur(12px);
+      border: 1px solid rgba(139, 92, 246, 0.2);
+      border-radius: 12px;
+      padding: 14px 18px;
+      color: #94a3b8;
+      font-size: 11px;
+      z-index: 10;
+    }
+
+    #tooltip {
+      position: absolute;
+      background: rgba(30, 30, 60, 0.95);
+      backdrop-filter: blur(8px);
+      border: 1px solid rgba(139, 92, 246, 0.4);
+      border-radius: 8px;
+      padding: 10px 14px;
+      color: #e2e8f0;
+      font-size: 12px;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.2s;
+      z-index: 20;
+      max-width: 300px;
+    }
+
+    #tooltip .tt-title {
+      font-weight: 700;
+      color: #e9d5ff;
+      margin-bottom: 4px;
+    }
+
+    #tooltip .tt-meta {
+      color: #94a3b8;
+      font-size: 11px;
+    }
+
+    /* Loading / Error overlay */
     .overlay {
-      position: fixed; inset: 0; display:flex; align-items:center; justify-content:center;
-      background: rgba(15,17,21,.85); color:#cbd5e1; font-size:14px; text-align:center; z-index:9999;
-      padding:16px; line-height:1.6;
+      position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+      background: rgba(26, 26, 46, 0.9); color: #c4b5fd; font-size: 14px; text-align: center; z-index: 9999;
+      padding: 16px; line-height: 1.6;
     }
-    .overlay.hidden { display:none; }
-    .overlay strong { color:#fff; }
+    .overlay.hidden { display: none; }
+    .overlay strong { color: #e9d5ff; }
   </style>
-
-  <!-- Cytoscape core -->
-  <script src="https://cdn.jsdelivr.net/npm/cytoscape@3/dist/cytoscape.min.js"></script>
-  <!-- Force-directed layout (선호 시 사용; 실패 시 자동 폴백됨) -->
-  <script src="https://cdn.jsdelivr.net/npm/cytoscape-fcose@2/dist/cytoscape-fcose.min.js"></script>
 </head>
 <body>
-<div id="cy"></div>
+<div id="graph-container">
+  <svg id="graph"></svg>
 
-<!-- 절대 줌 HUD -->
-<div id="hud" class="hud" style="display:none">
-  Zoom <span class="val">x<span id="hudScale">1.00</span></span>
-</div>
-
-<!-- 로딩/에러 -->
-<div id="overlay" class="overlay">
-  <div>
-    <strong>눌러..눌러봐</strong><!--<br/>
-    (로컬 파일로 직접 열면 <code>graph.json</code>을 못 읽을 수 있습니다.<br/>
-    간단 서버로 띄우거나 GitHub Pages/Netlify에서 확인하세요.)-->
+  <div id="legend">
+    <h3>seongho_vs_ai</h3>
+    <div style="color:#94a3b8; line-height:1.6;">노드 크기 = 연결 수</div>
   </div>
+
+  <div id="stats"></div>
+  <div id="tooltip"></div>
 </div>
 
+<!-- Loading / Error -->
+<div id="overlay" class="overlay">
+  <div><strong>그래프 로딩 중...</strong></div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
 <script>
-  /* =========================
-   * 사용자 설정
-   * ========================= */
-  const GRAPH_URL      = 'graph.json';
-  const NODE_SIZE_MIN  = 14;
-  const NODE_SIZE_MAX  = 60;
+  const GRAPH_URL = 'graph.json';
+  const NODE_COLOR = '#8b5cf6';
+  const HUB_THRESHOLD = 5;
 
-  // 라벨 정책
-  const ENABLE_HOVER_LABEL = true;
-  const ENABLE_ZOOM_LABEL  = true;
-  const LABEL_ZOOM         = 1.25; // 라벨이 보이는 임계값
-  const LABEL_EPS          = 0.02; // 초기줌을 임계값 "바로 아래"로 고정
-
-  const COLORS = {
-    node:   '#c9ced3',
-    hover:  '#8b5cf6',
-    edge:   '#8e98a4',
-    edgeHi: '#8b5cf6',
-    text:   '#e5e7eb',
-    textBg: '#0f1115'
-  };
-
-  // fcose 등록 (가능하면), 실패 시 무시
-  try { if (window.cytoscapeFcose) cytoscape.use(window.cytoscapeFcose); } catch(_) {}
-
-  /* 오버레이 */
+  /* Overlay helpers */
   const overlayEl = document.getElementById('overlay');
   const showOverlay = html => { overlayEl.innerHTML = html; overlayEl.classList.remove('hidden'); };
   const hideOverlay = () => overlayEl.classList.add('hidden');
+
+  function getRadius(d) {
+    return Math.max(4, Math.sqrt(d.linkCount) * 4);
+  }
 
   async function loadGraph() {
     const res = await fetch(GRAPH_URL, { cache: 'no-store' });
@@ -89,359 +187,198 @@
     return await res.json();
   }
 
-  /* 유향 → 무방향 표시(방향 메타 보존) */
-  function makeUndirectedEdgesWithDirMeta(directedEdges) {
-    const pairMap = new Map(); // key=a|b (a<b)
-    for (const e of directedEdges || []) {
-      const s=e?.data?.source, t=e?.data?.target;
-      if (!s || !t || s===t) continue;
-      const a = s<t ? s:t, b = s<t ? t:s;
-      const key = `${a}|${b}`;
-      let r = pairMap.get(key);
-      if (!r) { r={a,b,hasAB:false,hasBA:false,abCount:0,baCount:0}; pairMap.set(key,r); }
-      if (s===a && t===b) { r.hasAB=true; r.abCount++; } else { r.hasBA=true; r.baCount++; }
-    }
-    return Array.from(pairMap, ([key,r]) => ({
-      data:{ id:`u:${key}`, source:r.a, target:r.b, undirected:true,
-        hasAB:r.hasAB, hasBA:r.hasBA, abCount:r.abCount, baCount:r.baCount }
-    }));
-  }
-
-  /* 차수 기반 크기 */
-  function applyNodeSizes(cy) {
-    const degs = cy.nodes().map(n => n.degree());
-    const min = Math.min(...degs), max = Math.max(...degs);
-    const scale = d => max===min ? (NODE_SIZE_MIN+NODE_SIZE_MAX)/2
-            : NODE_SIZE_MIN + Math.sqrt((d-min)/(max-min))*(NODE_SIZE_MAX-NODE_SIZE_MIN);
-    cy.nodes().forEach(n => n.data('size', scale(n.degree())));
-  }
-
-  /* 라벨 정책 */
-  function setupLabelBehavior(cy) {
-    const updateZoomLabels = () => {
-      if (!ENABLE_ZOOM_LABEL) return;
-      const show = cy.zoom() >= LABEL_ZOOM;
-      if (show) cy.nodes().addClass('label-zoom'); else cy.nodes().removeClass('label-zoom');
-    };
-    updateZoomLabels();
-    cy.on('zoom', updateZoomLabels);
-
-    if (ENABLE_HOVER_LABEL) {
-      cy.on('mouseover', 'node', e => e.target.addClass('label-hover'));
-      cy.on('mouseout',  'node', e => e.target.removeClass('label-hover'));
-    }
-  }
-
-  /* HUD */
-  function setupAbsoluteZoomHUD(cy){
-    const hud = document.getElementById('hud');
-    const v = document.getElementById('hudScale');
-    hud.style.display='block';
-    const up=()=> v.textContent = cy.zoom().toFixed(2);
-    up(); cy.on('zoom', up);
-  }
-
-  /* ===== 공통 도우미: 간격 스케일 산출 ===== */
-  function clamp(x, min, max){ return Math.max(min, Math.min(max, x)); }
-
-  // 화면 크기·노드 수 기반으로 엣지 목표 길이/반발력 자동 계산
-  function computeLayoutScales(cy){
-    const N = Math.max(1, cy.nodes().length);
-    const area = Math.max(1, cy.width() * cy.height());
-    // 노드당 가용 면적의 제곱근 ≒ 평균 간격 기준
-    const s = Math.sqrt(area / N);
-
-    // 엣지 목표 길이(노드 많을수록 줄어듦)
-    const edgeLen = clamp(s * 0.55, 70, 160);
-    // 반발력은 목표 길이에 비례(겹침 방지)
-    const repulsion = Math.pow(edgeLen, 2) * 4;
-
-    return { edgeLen, repulsion };
-  }
-
-  // 전역 스케일(레이아웃용 + 드래그 스프링에 재사용)
-  let LAYOUT_SCALES = null;
-
-  // (이웃 크기에 따라) 엣지의 이상 길이
-  function idealEdgeLenFor(edge){
-    const base = (LAYOUT_SCALES?.edgeLen ?? 120);
-    const sa = edge.source().data('size') || NODE_SIZE_MIN;
-    const sb = edge.target().data('size') || NODE_SIZE_MIN;
-    return base + 0.25 * ((sa + sb) / 2);
-  }
-
-  /* 초기 레이아웃 (엣지 거리감 균일화) */
-  function runInitialLayout(cy) {
-    LAYOUT_SCALES = computeLayoutScales(cy);
-    const useFcose = !!window.cytoscapeFcose;
-    const { edgeLen, repulsion } = LAYOUT_SCALES;
-
-    const edgeLenFn = (e) => idealEdgeLenFor(e);
-
-    const conf = useFcose
-            ? {
-              name: 'fcose',
-              animate: true,
-              animationDuration: 500,
-              animationEasing: 'ease-out-cubic',
-              randomize: true,
-              fit: false,
-
-              // === 간격 컨트롤의 핵심 ===
-              idealEdgeLength: edgeLenFn,        // 엣지 목표 길이(함수)
-              nodeRepulsion:   () => repulsion,  // 반발력(함수)
-
-              quality: 'default',
-              gravity: 0.8,
-              numIter: 1500,
-              tile: true,
-              packComponents: true
-            }
-            : {
-              name: 'cose',
-              animate: true,
-              animationDuration: 500,
-              animationEasing: 'ease-out-cubic',
-              randomize: true,
-              fit: false,
-
-              // === 간격 컨트롤의 핵심 ===
-              idealEdgeLength: edgeLen,          // 숫자만 허용
-              nodeRepulsion:   repulsion,        // 숫자만 허용
-
-              componentSpacing: edgeLen * 0.8,
-              gravity: 1,
-              numIter: 1000,
-              edgeElasticity: 100
-            };
-
-    const layout = cy.layout(conf);
-    cy.one('layoutstop', () => requestAnimationFrame(() => fitAndClampInitialZoom(cy)));
-    layout.run();
-  }
-
-  /* 초기줌 = 라벨이 막 안 보이는 수준으로 고정 */
-  function fitAndClampInitialZoom(cy) {
-    const PADDING = 60;
-    cy.fit(cy.elements(), PADDING);
-    const fitZoom = cy.zoom();
-    const target  = Math.min(fitZoom, LABEL_ZOOM - LABEL_EPS);
-    const clamped = Math.max(cy.minZoom(), Math.min(cy.maxZoom(), target));
-    cy.zoom(clamped);
-    cy.center();
-  }
-
-  /* ======== 드래그 중 간격 유지: 스프링 + 완화 반발 ======== */
-
-  // (A) 연결된 엣지 길이를 이상 길이로 수렴시키는 '국소 스프링'
-  function applyEdgeSpringsFrom(moved){
-    const cy = moved.cy();
-    const edges = moved.connectedEdges();
-    const k = 0.15;     // 스프링 강성 (0.1~0.25 사이 추천)
-    const TOL = 1.0;    // 허용 오차(px)
-
-    edges.forEach(e => {
-      const other = e.source().id() === moved.id() ? e.target() : e.source();
-      const p1 = moved.position();
-      const p2 = other.position();
-
-      let dx = p2.x - p1.x, dy = p2.y - p1.y;
-      let d = Math.hypot(dx,dy) || 0.0001;
-
-      const L = idealEdgeLenFor(e);
-      const diff = d - L; // +: 너무 멀다 → 가까이,  -: 너무 가깝다 → 멀리
-
-      if (Math.abs(diff) > TOL){
-        const ux = dx/d, uy = dy/d;
-        const shift = -diff * k; // 멀면 음수(다가오게), 가깝면 양수(멀어지게)
-        // 드래그 중인 노드는 건드리지 않고, 이웃만 보정
-        other.position({ x: p2.x + ux*shift, y: p2.y + uy*shift });
-      }
-    });
-  }
-
-  // (B) 근접 노드끼리 겹치지 않게 가벼운 반발
-  function resolveCollisionsAround(moved) {
-    const cy = moved.cy();
-    const mPos = moved.position();
-    const mR   = moved.width()/2;
-    const MARGIN = 8;
-    const RANGE  = 250;
-
-    cy.nodes().not(moved).forEach(n => {
-      const p = n.position();
-      const dx = p.x - mPos.x, dy = p.y - mPos.y;
-      const dist = Math.hypot(dx,dy);
-      if (dist === 0 || dist > RANGE) return;
-
-      const r = n.width()/2;
-      const minDist = mR + r + MARGIN;
-
-      if (dist < minDist) {
-        const push = (minDist - dist) * 0.6;
-        const ux = dx / (dist || 1), uy = dy / (dist || 1);
-        n.position({ x: p.x + ux*push, y: p.y + uy*push });
-      }
-    });
-  }
-
-  // (C) 드래그 중/후 러너 설치
-  function installInteractiveForces(cy){
-    let ticking = false;
-
-    cy.on('drag', 'node', e => {
-      if (ticking) return;
-      ticking = true;
-      const moved = e.target;
-      requestAnimationFrame(() => {
-        applyEdgeSpringsFrom(moved);  // 엣지 길이 보정
-        resolveCollisionsAround(moved); // 겹침 완화
-        ticking = false;
-      });
-    });
-
-    // 드래그를 놓은 뒤, 짧게 추가 완화(시각적으로 더 정돈됨)
-    cy.on('dragfree', 'node', e => {
-      const moved = e.target;
-      let i = 0, frames = 10; // 10프레임 정도
-      const relax = () => {
-        applyEdgeSpringsFrom(moved);
-        resolveCollisionsAround(moved);
-        if (++i < frames) requestAnimationFrame(relax);
-      };
-      requestAnimationFrame(relax);
-    });
-
-    // 창 크기 변동 시 스케일 업데이트
-    window.addEventListener('resize', () => {
-      LAYOUT_SCALES = computeLayoutScales(cy);
-    });
-  }
-
   (async () => {
     try {
       const raw = await loadGraph();
       hideOverlay();
 
-      const nodes = raw?.elements?.nodes ?? [];
-      const undirectedEdges = makeUndirectedEdgesWithDirMeta(raw?.elements?.edges ?? []);
+      const rawNodes = raw?.elements?.nodes ?? [];
+      const rawEdges = raw?.elements?.edges ?? [];
 
-      const cy = cytoscape({
-        container: document.getElementById('cy'),
-        elements: { nodes, edges: undirectedEdges },
+      /* ── Convert Cytoscape format → D3 format ── */
 
-        /* 핵심 옵션: 선택 상자/셀렉션 비활성화 → 네모 박스 제거 */
-        boxSelectionEnabled: false,  // 드래그로 박스 선택 금지
-        autounselectify: true,       // 사용자가 엘리먼트를 선택 상태로 만들 수 없음
+      // Deduplicate edges (directed → undirected)
+      const edgeSet = new Set();
+      const links = [];
+      for (const e of rawEdges) {
+        const s = e?.data?.source, t = e?.data?.target;
+        if (!s || !t || s === t) continue;
+        const a = s < t ? s : t, b = s < t ? t : s;
+        const key = `${a}|${b}`;
+        if (!edgeSet.has(key)) {
+          edgeSet.add(key);
+          links.push({ source: a, target: b });
+        }
+      }
 
-        style: [
-          /* 코어(캔버스)의 선택 박스 자체 숨김 */
-          { selector: 'core', style: {
-              'selection-box-opacity': 0,
-              'selection-box-color': '#000000',
-              'selection-box-border-color': '#000000',
-              'selection-box-border-width': 0
-            }},
+      // Count links per node
+      const linkCountMap = new Map();
+      for (const l of links) {
+        linkCountMap.set(l.source, (linkCountMap.get(l.source) || 0) + 1);
+        linkCountMap.set(l.target, (linkCountMap.get(l.target) || 0) + 1);
+      }
 
-          /* 기본 노드 */
-          { selector: 'node', style: {
-              'background-color': '#c9ced3',
-              'background-opacity': 1,
-              'width': 'data(size)', 'height':'data(size)',
-              'label':'', 'font-size':11, 'color':COLORS.text,
-              'text-wrap':'wrap', 'text-max-width':240,
-              'text-halign':'center','text-valign':'bottom','text-margin-y':6,
-              'z-index': 10,
-              'overlay-opacity': 0,   /* 클릭/선택시 하이라이트 제거 */
-              'active-bg-opacity': 0,
-              'transition-property': 'background-color, border-width, border-color, text-opacity, background-opacity',
-              'transition-duration': '120ms'
-            }},
+      const nodes = rawNodes.map(n => ({
+        id: n.data.id,
+        label: n.data.label || n.data.id,
+        url: n.data.url || '',
+        linkCount: linkCountMap.get(n.data.id) || 0
+      }));
 
-          { selector: 'node:selected', style: { 'overlay-opacity': 0, 'border-width': 0 }},
+      /* ── Stats ── */
+      const statsEl = document.getElementById('stats');
+      statsEl.textContent = `노트 ${nodes.length}개 · 링크 ${links.length}개`;
 
-          /* 라벨 표시(호버/줌) — 배경 박스 제거, 대신 얇은 텍스트 아웃라인만 */
-          { selector: 'node.label-hover, node.label-zoom', style: {
-              'label':'data(label)',
-              'text-outline-width': 2,
-              'text-outline-color': '#0f1115',
-              'text-background-opacity': 0
-            }},
+      /* ── D3 Force Graph ── */
+      const svg = d3.select('#graph');
+      const container = document.getElementById('graph-container');
+      const width = container.clientWidth;
+      const height = container.clientHeight;
 
-          /* 이웃 노드 */
-          { selector: 'node.neighbor', style: {
-              'background-color': '#e5e7eb', 'background-opacity': 1
-            }},
+      const g = svg.append('g');
 
-          /* 호버 노드: 채움 자체 보라 */
-          { selector: 'node.hover', style: {
-              'background-color': COLORS.hover,
-              'border-width': 1.5, 'border-color': COLORS.edgeHi,
-              'background-opacity': 1
-            }},
+      // Zoom
+      const zoom = d3.zoom()
+        .scaleExtent([0.3, 5])
+        .on('zoom', (e) => g.attr('transform', e.transform));
+      svg.call(zoom);
 
-          /* dim 노드(호버 중 이웃 아님): 완전 투명 → 엣지 끊김 방지 */
-          { selector: 'node.dim', style: {
-              'background-opacity': 0, 'border-width': 0, 'text-opacity': 0.10
-            }},
+      // Initial centering
+      svg.call(zoom.transform, d3.zoomIdentity.translate(width / 2, height / 2).scale(0.9));
 
-          /* 기본 엣지(얇고 균일) */
-          { selector: 'edge', style: {
-              'width': 1.2, 'opacity': 0.28,
-              'line-color': COLORS.edge,
-              'curve-style': 'straight',
-              'line-cap': 'round',
-              'target-arrow-shape': 'none',
-              'z-index': 1,
-              'transition-property': 'opacity, line-color, width',
-              'transition-duration': '120ms'
-            }},
+      // Simulation
+      const simulation = d3.forceSimulation(nodes)
+        .force('link', d3.forceLink(links).id(d => d.id).distance(d => {
+          const sl = typeof d.source === 'object' ? d.source.linkCount : 0;
+          const tl = typeof d.target === 'object' ? d.target.linkCount : 0;
+          if (sl >= HUB_THRESHOLD || tl >= HUB_THRESHOLD) return 120;
+          return 70;
+        }))
+        .force('charge', d3.forceManyBody().strength(d => d.linkCount >= HUB_THRESHOLD ? -400 : -150))
+        .force('center', d3.forceCenter(0, 0))
+        .force('collision', d3.forceCollide().radius(d => getRadius(d) + 15));
 
-          /* 강조 엣지: 보라, 두껍고 위 레이어 */
-          { selector: 'edge.edge-highlight', style: {
-              'line-color': COLORS.edgeHi, 'opacity': 1, 'width': 2.4, 'z-index': 999
-            }},
+      // Links
+      const link = g.append('g')
+        .selectAll('line')
+        .data(links)
+        .join('line')
+        .attr('class', 'link');
 
-          /* 흐린 엣지 */
-          { selector: 'edge.edge-fade', style: { 'opacity': 0.08 }}
-        ]
+      // Nodes
+      const node = g.append('g')
+        .selectAll('circle')
+        .data(nodes)
+        .join('circle')
+        .attr('class', 'node-circle')
+        .attr('r', d => getRadius(d))
+        .attr('fill', NODE_COLOR)
+        .attr('stroke', 'rgba(255,255,255,0.1)')
+        .attr('stroke-width', 1)
+        .style('filter', d => d.linkCount >= HUB_THRESHOLD ? `drop-shadow(0 0 6px ${NODE_COLOR}55)` : 'none')
+        .call(d3.drag()
+          .on('start', dragstarted)
+          .on('drag', dragged)
+          .on('end', dragended));
+
+      // Labels
+      const label = g.append('g')
+        .selectAll('text')
+        .data(nodes)
+        .join('text')
+        .attr('class', d => 'node-label' + (d.linkCount >= HUB_THRESHOLD ? ' hub' : ''))
+        .attr('dy', d => getRadius(d) + 14)
+        .text(d => d.label);
+
+      // Tooltip
+      const tooltip = document.getElementById('tooltip');
+
+      /* ── Interactions ── */
+
+      // Hover: highlight neighbors, dim rest
+      node.on('mouseover', function(event, d) {
+        const connected = new Set();
+        connected.add(d.id);
+        links.forEach(l => {
+          const sid = typeof l.source === 'object' ? l.source.id : l.source;
+          const tid = typeof l.target === 'object' ? l.target.id : l.target;
+          if (sid === d.id) connected.add(tid);
+          if (tid === d.id) connected.add(sid);
+        });
+
+        node.classed('dimmed', n => !connected.has(n.id));
+        label.classed('dimmed', n => !connected.has(n.id));
+        label.classed('focused', n => n.id === d.id);
+        link.classed('dimmed', l => {
+          const sid = typeof l.source === 'object' ? l.source.id : l.source;
+          const tid = typeof l.target === 'object' ? l.target.id : l.target;
+          return !connected.has(sid) || !connected.has(tid);
+        });
+        link.classed('highlighted', l => {
+          const sid = typeof l.source === 'object' ? l.source.id : l.source;
+          const tid = typeof l.target === 'object' ? l.target.id : l.target;
+          return (sid === d.id || tid === d.id);
+        });
+
+        d3.select(this).transition().duration(200).attr('r', getRadius(d) * 1.5);
+
+        tooltip.style.opacity = 1;
+        tooltip.innerHTML = `<div class="tt-title">${d.label}</div><div class="tt-meta">${d.linkCount}개 연결</div>`;
+        tooltip.style.left = (event.pageX + 16) + 'px';
+        tooltip.style.top = (event.pageY - 10) + 'px';
       });
 
-      applyNodeSizes(cy);
-      setupLabelBehavior(cy);
-      setupAbsoluteZoomHUD(cy);
-
-      // 초기 레이아웃 및 인터랙션 힘 적용
-      runInitialLayout(cy);
-      installInteractiveForces(cy);
-
-      /* === 이웃 강조 === */
-      cy.on('mouseover', 'node', e => {
-        const n = e.target;
-        const neighNodes = n.neighborhood('node');
-        const neighEdges = n.connectedEdges();
-
-        cy.nodes().addClass('dim').removeClass('neighbor hover');
-        cy.edges().addClass('edge-fade').removeClass('edge-highlight');
-
-        n.removeClass('dim').addClass('hover');
-        neighNodes.removeClass('dim').addClass('neighbor');
-        neighEdges.removeClass('edge-fade').addClass('edge-highlight');
-      });
-      cy.on('mouseout', 'node', () => {
-        cy.nodes().removeClass('dim neighbor hover label-hover');
-        cy.edges().removeClass('edge-fade edge-highlight');
+      node.on('mousemove', function(event) {
+        tooltip.style.left = (event.pageX + 16) + 'px';
+        tooltip.style.top = (event.pageY - 10) + 'px';
       });
 
-      // 클릭 → 새 탭으로 글 열기
-      cy.on('tap', 'node', e => {
-        const url = e.target.data('url');
-        if (url) window.open(url, '_blank', 'noopener');
+      node.on('mouseout', function(event, d) {
+        node.classed('dimmed', false);
+        label.classed('dimmed', false);
+        label.classed('focused', false);
+        link.classed('dimmed', false);
+        link.classed('highlighted', false);
+        d3.select(this).transition().duration(200).attr('r', getRadius(d));
+        tooltip.style.opacity = 0;
       });
+
+      // Click: open blog post in new tab
+      node.on('click', function(event, d) {
+        if (d.url) window.open(d.url, '_blank', 'noopener');
+      });
+
+      // Tick
+      simulation.on('tick', () => {
+        link
+          .attr('x1', d => d.source.x)
+          .attr('y1', d => d.source.y)
+          .attr('x2', d => d.target.x)
+          .attr('y2', d => d.target.y);
+        node
+          .attr('cx', d => d.x)
+          .attr('cy', d => d.y);
+        label
+          .attr('x', d => d.x)
+          .attr('y', d => d.y);
+      });
+
+      // Drag
+      function dragstarted(event, d) {
+        if (!event.active) simulation.alphaTarget(0.3).restart();
+        d.fx = d.x; d.fy = d.y;
+      }
+      function dragged(event, d) {
+        d.fx = event.x; d.fy = event.y;
+      }
+      function dragended(event, d) {
+        if (!event.active) simulation.alphaTarget(0);
+        d.fx = null; d.fy = null;
+      }
 
     } catch (err) {
       showOverlay(
-              `<div>
+        `<div>
           <strong>그래프 로드 실패</strong><br/>
           ${String(err).replace(/[<>]/g, '')}<br/><br/>
           · <code>${GRAPH_URL}</code> 파일이 같은 폴더에 있는지 확인하세요.<br/>
